@@ -99,7 +99,9 @@ conversation isn't open in two places.
   `pp rm <name>`. Tokens are long-lived (~1 year), so revoke promptly if one is
   exposed.
 
-Run `zsh test/test.zsh` for a self-check that asserts the above.
+Run `zsh test/test.zsh` for a self-check that asserts the above, and
+`zsh test/integration.zsh` to verify the launch path injects the right config
+and token end to end (against a fake `claude`, so no account is needed).
 
 ## Notes
 
