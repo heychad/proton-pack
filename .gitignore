@@ -1,0 +1,6 @@
+# Never commit local config or secrets
+profiles.conf
+accounts/
+*.token
+.active
+.DS_Store

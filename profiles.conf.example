@@ -1,0 +1,21 @@
+# proton-pack profiles — copy to ~/.config/proton-pack/profiles.conf and edit.
+#
+# One profile per line, fields separated by '|':
+#
+#   name | config_dir | git_name | git_email | gh_user | match
+#
+#   name       short label (letters/digits/._- )
+#   config_dir CLAUDE_CONFIG_DIR for this profile — its own login, skills,
+#              settings. Use a distinct dir per profile. '~' is expanded.
+#   git_name   commit author name to use here   ('-' to leave git unchanged)
+#   git_email  commit author email to use here  ('-' to leave git unchanged)
+#   gh_user    GitHub CLI account to switch to  ('-' if you don't use gh)
+#   match      space-separated path globs that select this profile, OR the
+#              word 'default' to make it the fallback when nothing else matches.
+#
+# Profiles are tried top to bottom; the first whose glob matches your current
+# directory wins, so put more specific profiles first. Exactly one profile
+# should use 'default'.
+
+work     | ~/.claude-work     | Jane Doe | jane@corp.com  | jane-corp | ~/code/work/* */work */work/*
+personal | ~/.claude-personal | janedev  | jane@gmail.com | janedev   | default
