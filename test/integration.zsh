@@ -68,6 +68,16 @@ print -r -- "E) a preset CLAUDE_CONFIG_DIR bypasses routing"
 ( cd "$ROOT/work/repo" && CLAUDE_CONFIG_DIR=/tmp/preset claude )
 [ "$(field CLAUDE_CONFIG_DIR)" = "/tmp/preset" ] && ok "preset respected (no override)" || bad "preset bypass"
 
+print -r -- "F) login sub-profile routes to its OWN config dir, full scope (no token)"
+mkdir -p "$ROOT/.claude-work"
+print -r -- '{"mcpServers":{}}' > "$ROOT/.claude-work/.claude.json"
+( cd "$ROOT/work/repo" && pp add-login c ) >/dev/null 2>&1
+print -r -- c > "$PP_ACCOUNTS_DIR/work/.active"
+( cd "$ROOT/work/repo" && claude --resume )
+[ "$(field CLAUDE_CONFIG_DIR)" = "$ROOT/.claude-work-c" ] && ok "config dir = sub-profile (own login)" || bad "config dir = $(field CLAUDE_CONFIG_DIR)"
+[ "$(field HAS_TOKEN)" = "no" ]                           && ok "login sub-profile injects no token"  || bad "login leaked a token"
+[ "$(field GIT_AUTHOR_EMAIL)" = "jane@corp.com" ]         && ok "git identity inherited from work"   || bad "git email = $(field GIT_AUTHOR_EMAIL)"
+
 print -r -- ""
 print -r -- "passed: $pass   failed: $fail"
 rm -rf "$ROOT"

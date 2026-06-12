@@ -8,9 +8,13 @@
 #            accounts/orgs from crossing.
 #   ACCOUNT  which Anthropic login provides usage. Each profile can stack
 #            several Max plans; switch with `pp flip` when one hits its limit.
+#            Two types: a 'token' account (cheap, inference-only) or a 'login'
+#            sub-profile (its own config dir + full login -> Remote Control / MCP
+#            auth work). See `pp add` vs `pp add-login`.
 #
 # Define profiles in $PP_PROFILES_FILE (see profiles.conf.example).
-# Account tokens live in $PP_ACCOUNTS_DIR/<profile>/<name>.token (0600).
+# Account store: $PP_ACCOUNTS_DIR/<profile>/<name>.token  (token, 0600)
+#                $PP_ACCOUNTS_DIR/<profile>/<name>.login  (sub-profile dir path)
 
 [ -n "$ZSH_VERSION" ] || { print -r -- "proton-pack: requires zsh" >&2; return 1 2>/dev/null; }
 
@@ -83,8 +87,17 @@ _pp_profile_for_pwd() {
 }
 
 # ---- account store -------------------------------------------------------
-_pp_area_dir()   { print -r -- "$PP_ACCOUNTS_DIR/$1"; }
-_pp_token_file() { print -r -- "$PP_ACCOUNTS_DIR/$1/$2.token"; }
+_pp_area_dir()     { print -r -- "$PP_ACCOUNTS_DIR/$1"; }
+_pp_token_file()   { print -r -- "$PP_ACCOUNTS_DIR/$1/$2.token"; }
+_pp_login_marker() { print -r -- "$PP_ACCOUNTS_DIR/$1/$2.login"; }
+
+# Type of an account for a profile: native | token | login | unknown.
+_pp_acct_type() {
+  [ "$2" = native ] && { print -r -- native; return; }
+  [ -r "$(_pp_login_marker "$1" "$2")" ] && { print -r -- login; return; }
+  [ -r "$(_pp_token_file "$1" "$2")" ]   && { print -r -- token; return; }
+  print -r -- unknown
+}
 
 # Ensure the store + a profile dir exist and are private (0700).
 _pp_ensure_dir() {
@@ -103,13 +116,15 @@ _pp_set_active() {
   print -r -- "$2" > "$PP_ACCOUNTS_DIR/$1/.active"
 }
 
-# List account names for a profile: native first, then stored token files.
+# List account names for a profile: native first, then token + login accounts
+# (deduped, in case a name somehow has both).
 _pp_list() {
-  print -r -- native
+  local -a names; names=(native)
   local f
-  for f in "$PP_ACCOUNTS_DIR/$1"/*.token(N); do
-    print -r -- "${${f:t}:r}"
+  for f in "$PP_ACCOUNTS_DIR/$1"/*.token(N) "$PP_ACCOUNTS_DIR/$1"/*.login(N); do
+    names+=("${${f:t}:r}")
   done
+  print -rl -- "${(u)names[@]}"
 }
 
 # Advance the active account to the next in the list (wrapping). Echoes it.
@@ -136,19 +151,30 @@ _pp_launch() {
     command claude "$@"; return
   fi
   local cfg="${PP_CFG_DIR[$prof]}" gname="${PP_GIT_NAME[$prof]}" gemail="${PP_GIT_EMAIL[$prof]}" gh="${PP_GH[$prof]}"
+
+  # Account axis (resolved before env so a login sub-profile can override cfg):
+  #   login -> route to the sub-profile's own config dir (full-scope login)
+  #   token -> keep the profile's config dir, inject the OAuth token
+  local acct; acct="$(_pp_active "$prof")"
+  local use_token=""
+  if [ "$acct" != native ] && _pp_valid_name "$acct"; then
+    local lf tf; lf="$(_pp_login_marker "$prof" "$acct")"; tf="$(_pp_token_file "$prof" "$acct")"
+    if [ -r "$lf" ]; then
+      local ld; ld="$(command cat "$lf")"
+      if [ -d "$ld" ]; then cfg="$ld"
+      else print -r -- "proton-pack: login sub-profile '$acct' dir missing ($ld); using native login" >&2; fi
+    elif [ -r "$tf" ]; then
+      use_token="$tf"
+    else
+      print -r -- "proton-pack: account '$acct' for '$prof' has no token or login dir; using native login" >&2
+    fi
+  fi
+
   [ -n "$gh" ] && [ "$gh" != - ] && command -v gh >/dev/null 2>&1 && gh auth switch --user "$gh" >/dev/null 2>&1
   [ -n "$cfg" ]    && [ "$cfg" != - ]    && local -x CLAUDE_CONFIG_DIR="$cfg"
   [ -n "$gname" ]  && [ "$gname" != - ]  && local -x GIT_AUTHOR_NAME="$gname" GIT_COMMITTER_NAME="$gname"
   [ -n "$gemail" ] && [ "$gemail" != - ] && local -x GIT_AUTHOR_EMAIL="$gemail" GIT_COMMITTER_EMAIL="$gemail"
-  local acct; acct="$(_pp_active "$prof")"
-  if [ "$acct" != native ] && _pp_valid_name "$acct"; then
-    local tf; tf="$(_pp_token_file "$prof" "$acct")"
-    if [ -r "$tf" ]; then
-      local -x CLAUDE_CODE_OAUTH_TOKEN="$(cat "$tf")"
-    else
-      print -r -- "proton-pack: account '$acct' for '$prof' has no token; using native login" >&2
-    fi
-  fi
+  [ -n "$use_token" ] && local -x CLAUDE_CODE_OAUTH_TOKEN="$(cat "$use_token")"
   command claude "$@"
 }
 
@@ -190,9 +216,16 @@ _pp_show_accounts() {
   [ -z "$prof" ] && { print -r -- "no profile for $PWD"; return 1; }
   local cur; cur="$(_pp_active "$prof")"
   print -r -- "profile: $prof    accounts dir: $(_pp_area_dir "$prof")"
-  local a
+  local a t tag
   for a in ${(f)"$(_pp_list "$prof")"}; do
-    if [ "$a" = "$cur" ]; then print -r -- "  * $a   (active)"; else print -r -- "    $a"; fi
+    t="$(_pp_acct_type "$prof" "$a")"
+    case "$t" in
+      native) tag="native login (full scope)" ;;
+      token)  tag="token (inference-only)" ;;
+      login)  tag="login sub-profile (full scope)" ;;
+      *)      tag="$t" ;;
+    esac
+    if [ "$a" = "$cur" ]; then print -r -- "  * $a   — $tag   (active)"; else print -r -- "    $a   — $tag"; fi
   done
 }
 
@@ -203,11 +236,11 @@ _pp_use() {
   if [ "$name" != native ] && ! _pp_valid_name "$name"; then
     print -r -- "pp: invalid account name '$name' (letters, digits, . _ - only)"; return 1
   fi
-  if [ "$name" != native ] && [ ! -r "$(_pp_token_file "$prof" "$name")" ]; then
-    print -r -- "pp: no token for '$name' in '$prof' (add it: pp add $name)"; return 1
+  if [ "$name" != native ] && [ ! -r "$(_pp_token_file "$prof" "$name")" ] && [ ! -r "$(_pp_login_marker "$prof" "$name")" ]; then
+    print -r -- "pp: no account '$name' in '$prof' (token: pp add $name | login sub-profile: pp add-login $name)"; return 1
   fi
   _pp_set_active "$prof" "$name"
-  print -r -- "✓ $prof active account -> $name"
+  print -r -- "✓ $prof active account -> $name ($(_pp_acct_type "$prof" "$name"))"
 }
 
 _pp_flip() {
@@ -215,12 +248,18 @@ _pp_flip() {
   [ -z "$prof" ] && { print -r -- "pp: no profile for $PWD"; return 1; }
   local -a accts; accts=(${(f)"$(_pp_list "$prof")"})
   if [ ${#accts[@]} -le 1 ]; then
-    print -r -- "pp flip: only 'native' exists for '$prof'. Stack another: pp add <name>"; return 1
+    print -r -- "pp flip: only 'native' exists for '$prof'. Stack another: pp add <name> | pp add-login <name>"; return 1
   fi
   local prev; prev="$(_pp_active "$prof")"
   local next; next="$(_pp_rotate "$prof")"
-  print -r -- "✓ $prof account: $prev → $next  (now active)"
-  print -r -- "  resume your work:  claude --resume"
+  local nt; nt="$(_pp_acct_type "$prof" "$next")"
+  print -r -- "✓ $prof account: $prev → $next ($nt)  (now active)"
+  if [ "$nt" = login ]; then
+    print -r -- "  full-scope sub-profile — its own session space; Remote Control works."
+    print -r -- "  resume there:  claude --resume   (start fresh if it's empty)"
+  else
+    print -r -- "  resume your work:  claude --resume"
+  fi
 }
 
 _pp_remove() {
@@ -228,7 +267,15 @@ _pp_remove() {
   [ -z "$name" ] && { print -r -- "usage: pp rm <name>"; return 1; }
   [ "$name" = native ] && { print -r -- "pp: can't remove the native login"; return 1; }
   if ! _pp_valid_name "$name"; then print -r -- "pp: invalid account name '$name'"; return 1; fi
-  rm -f "$(_pp_token_file "$prof" "$name")" && print -r -- "✓ removed account '$name' from '$prof'"
+  local lf; lf="$(_pp_login_marker "$prof" "$name")"
+  if [ -r "$lf" ]; then
+    local ld; ld="$(command cat "$lf")"
+    rm -f "$lf" && print -r -- "✓ removed login sub-profile '$name' from '$prof'"
+    print -r -- "  its config dir is left intact (still logged in): $ld"
+    print -r -- "  to delete it for good:  rm -rf '$ld'"
+  else
+    rm -f "$(_pp_token_file "$prof" "$name")" && print -r -- "✓ removed account '$name' from '$prof'"
+  fi
   [ "$(_pp_active "$prof")" = "$name" ] && { _pp_set_active "$prof" native; print -r -- "  (was active; reset to native)"; }
 }
 
@@ -268,6 +315,68 @@ _pp_add_account() {
   print -r -- "  activate: pp use $name    |    next account: pp flip"
 }
 
+# Create a full-scope LOGIN sub-profile: a sibling config dir that inherits the
+# profile's settings + MCP servers (NOT its credentials), then gets its own
+# `claude auth login`. Unlike a token account, it's a real login -> Remote
+# Control and MCP OAuth work.
+_pp_add_login() {
+  local prof="$1" name="$2"
+  [ -z "$prof" ] && { print -r -- "pp: no profile for $PWD"; return 1; }
+  if ! _pp_valid_name "$name"; then
+    print -r -- "pp: invalid account name '$name'."
+    print -r -- "  Use letters, digits, dot, underscore, or dash (no '/', '..', or 'native')."
+    return 1
+  fi
+  if [ -e "$(_pp_token_file "$prof" "$name")" ] || [ -e "$(_pp_login_marker "$prof" "$name")" ]; then
+    print -r -- "pp: account '$name' already exists for '$prof'. Remove it first (pp rm $name)."; return 1
+  fi
+  local parent="${PP_CFG_DIR[$prof]}"
+  if [ -z "$parent" ] || [ "$parent" = - ]; then
+    print -r -- "pp: profile '$prof' has no config dir set in profiles.conf — can't make a sub-profile."; return 1
+  fi
+  parent="${parent/#\~/$HOME}"
+  local sub="${parent}-${name}"
+  if [ -e "$sub" ]; then
+    print -r -- "pp: sub-profile dir already exists: $sub (pick another name or remove it)."; return 1
+  fi
+  _pp_ensure_dir "$prof"
+  mkdir -p "$sub" && chmod 700 "$sub"
+
+  # Inherit config, never credentials.
+  [ -r "$parent/settings.json" ]       && cp -p "$parent/settings.json"       "$sub/settings.json"
+  [ -r "$parent/settings.local.json" ] && cp -p "$parent/settings.local.json" "$sub/settings.local.json"
+  [ -r "$parent/.mcp.json" ]           && cp -p "$parent/.mcp.json"           "$sub/.mcp.json"
+  if [ -r "$parent/.claude.json" ] && command -v python3 >/dev/null 2>&1; then
+python3 - "$parent/.claude.json" "$sub/.claude.json" <<'PY'
+import json, sys
+src, dst = sys.argv[1], sys.argv[2]
+try:
+    d = json.load(open(src))
+except Exception:
+    d = {}
+out = {}
+mcp = d.get("mcpServers")
+if isinstance(mcp, dict):
+    out["mcpServers"] = mcp
+json.dump(out, open(dst, "w"), indent=2)
+PY
+    chmod 600 "$sub/.claude.json"
+  fi
+
+  print -r -- "$sub" > "$(_pp_login_marker "$prof" "$name")"
+  chmod 600 "$(_pp_login_marker "$prof" "$name")"
+
+  print -r -- "✓ created login sub-profile '$name' for '$prof'"
+  print -r -- "  config dir : $sub"
+  print -r -- "  inherited  : settings + MCP servers from $parent (NOT its login)"
+  print -r -- ""
+  print -r -- "Next — log it in with the OTHER account (full scope, opens a browser):"
+  print -r -- "  CLAUDE_CONFIG_DIR=$sub command claude auth login"
+  print -r -- "Confirm it's a different account than native:"
+  print -r -- "  CLAUDE_CONFIG_DIR=$sub command claude auth status"
+  print -r -- "Then activate it here:  pp use $name   (or pp flip)"
+}
+
 _pp_doctor() {
   print -r -- "proton-pack doctor"
   print -r -- "  config file: $PP_PROFILES_FILE $([ -r "$PP_PROFILES_FILE" ] && print -r -- '(ok)' || print -r -- '(MISSING)')"
@@ -289,20 +398,24 @@ _pp_help() {
   cat <<'EOF'
 proton-pack — Claude Code profile + account switching, by directory
 
-  claude [args]     launch Claude in the profile + account for this directory
-  pp profiles       list configured profiles (the one for this dir marked *)
-  pp where          show profile + account for the current directory
-  pp ls             list accounts for the current profile
-  pp add <name>     add a stacked account (opens a browser login)
-  pp use <name>     switch the active account
-  pp flip           rotate to the next account (no launch); then `claude --resume`
-  pp rm <name>      remove a stored account
-  pp run [args]     launch (same as `claude`; use when the wrapper is disabled)
-  pp reload         re-read profiles.conf after editing it
-  pp doctor         check config, perms, and dependencies
-  pp help           this help
+  claude [args]      launch Claude in the profile + account for this directory
+  pp profiles        list configured profiles (the one for this dir marked *)
+  pp where           show profile + account for the current directory
+  pp ls              list accounts for the current profile (with their type)
+  pp add <name>      add a token account (inference-only; opens a browser login)
+  pp add-login <name>  add a login sub-profile (full scope: Remote Control / MCP)
+  pp use <name>      switch the active account
+  pp flip            rotate to the next account (no launch); then `claude --resume`
+  pp rm <name>       remove a stored account (a sub-profile's dir is left intact)
+  pp run [args]      launch (same as `claude`; use when the wrapper is disabled)
+  pp reload          re-read profiles.conf after editing it
+  pp doctor          check config, perms, and dependencies
+  pp help            this help
 
 Accounts: 'native' is each profile's built-in login; stack more as b, c, d ...
+  - token account (pp add): cheap, shares native's sessions, INFERENCE-ONLY.
+  - login sub-profile (pp add-login): own config dir + login, FULL SCOPE
+    (Remote Control, MCP auth), separate session history.
 Profiles live in ~/.config/proton-pack/profiles.conf (see profiles.conf.example).
 EOF
 }
@@ -316,6 +429,7 @@ pp() {
     where|profile)     _pp_where ;;
     ls|list|accounts)  _pp_show_accounts "$prof" ;;
     add)               _pp_add_account "$prof" "$1" ;;
+    add-login|addlogin) _pp_add_login "$prof" "$1" ;;
     use)               _pp_use "$prof" "$1" ;;
     flip|rotate)       _pp_flip "$prof" ;;
     rm|remove)         _pp_remove "$prof" "$1" ;;

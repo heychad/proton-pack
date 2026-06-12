@@ -19,7 +19,25 @@ These are independent, and keeping them separate is the whole trick:
 2. **Account** — *which Anthropic login provides the usage.* Each profile can
    hold several accounts. `native` is the profile's built-in login; stack more
    as `b`, `c`, `d` … When one runs out, `pp flip` switches to the next and your
-   sessions continue on it.
+   sessions continue on it. Stacked accounts come in two flavors — a cheap
+   **token** account or a full-scope **login sub-profile** (see below).
+
+### Token account vs login sub-profile
+
+|  | **token** (`pp add`) | **login sub-profile** (`pp add-login`) |
+|---|---|---|
+| How | A long-lived OAuth token (`claude setup-token`) injected at launch | Its own config dir with its own `claude auth login` |
+| Setup | Paste a token once | Browser login once |
+| Shares native's sessions | Yes — `claude --resume` continues the same session | No — separate session history |
+| Remote Control / MCP auth | **No** — tokens are inference-only | **Yes** — it's a real login |
+| Inherits | The profile's config dir wholesale | Parent's git identity, gh user, MCP servers, settings |
+| Best for | Cheap failover for plain coding through a limit | A second account you need full features on |
+
+> **Heads-up:** Remote Control and MCP OAuth require a *full* login. Long-lived
+> tokens are inference-only by design, so a **token** account can't use them —
+> if Claude says *"requires a full-scope login token,"* flip back to `native` or
+> use a **login sub-profile** instead. proton-pack surfaces the type of each
+> account in `pp ls` so you always know which you're on.
 
 ## Install
 
@@ -56,17 +74,34 @@ time you launch `claude` there.
 ```sh
 claude                 # launches in the profile + account for your current dir
 pp where               # what will `claude` use here?
-pp ls                  # accounts for this profile (active one marked *)
-pp add b               # stack a second account (browser login)
+pp ls                  # accounts for this profile + their type (active one *)
+pp add b               # stack a token account (inference-only; browser login)
+pp add-login b         # stack a login sub-profile (full scope; browser login)
 pp use b               # switch the active account
 pp flip                # rotate to the next account, then run `claude --resume`
 pp rm b                # remove a stored account
 ```
 
-Adding an account opens a browser login in a throwaway config dir, so your
-existing logins are never touched. Sign in as the account you want to stack —
-**use a private/incognito window** so you don't accidentally mint a token for an
-account you're already signed into.
+`pp add` opens a browser login in a throwaway config dir, so your existing
+logins are never touched. Sign in as the account you want to stack — **use a
+private/incognito window** so you don't accidentally mint a token for an account
+you're already signed into.
+
+`pp add-login` makes a sibling config dir (`<profile-dir>-<name>`) that inherits
+the profile's settings and MCP servers — but never its credentials — then prints
+the one command to log it in:
+
+```sh
+pp add-login b                                      # in a work directory
+CLAUDE_CONFIG_DIR=~/.claude-work-b command claude auth login   # log in the 2nd account
+CLAUDE_CONFIG_DIR=~/.claude-work-b command claude auth status  # confirm it's different
+pp use b                                            # activate it (full scope)
+```
+
+A login sub-profile's session history is separate from `native` (it's a
+different config dir), and its inherited MCP/settings are a snapshot taken at
+creation. `pp rm` removes it from the account list but leaves the config dir on
+disk (it's a real login) — delete it yourself when you're done with it.
 
 ### Hitting a usage limit
 
@@ -98,6 +133,10 @@ conversation isn't open in two places.
 - To revoke an account: remove the token in the Anthropic console, then
   `pp rm <name>`. Tokens are long-lived (~1 year), so revoke promptly if one is
   exposed.
+- **Login sub-profiles never copy credentials.** `pp add-login` inherits only
+  settings and MCP-server config from the parent; the login itself is created by
+  `claude auth login` and stored by Claude (a per-dir file or your OS keychain),
+  exactly like any other profile's native login.
 
 Run `zsh test/test.zsh` for a self-check that asserts the above, and
 `zsh test/integration.zsh` to verify the launch path injects the right config
