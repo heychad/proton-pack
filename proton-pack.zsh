@@ -497,6 +497,47 @@ _pp_doctor() {
     local p; p="$(stat -f '%Lp' "$PP_ACCOUNTS_DIR" 2>/dev/null || stat -c '%a' "$PP_ACCOUNTS_DIR" 2>/dev/null)"
     print -r -- "  accounts dir: $PP_ACCOUNTS_DIR (perms $p $([ "$p" = 700 ] && print -r -- ok || print -r -- 'want 700'))"
   fi
+  # Per-account health: each profile's native dir + every login/token account.
+  # Read-only — runs `auth status`, never logs in.
+  print -r -- ""
+  print -r -- "  accounts (auth / creds / symlinks):"
+  local cfg acct lf tf adir kind
+  for name in $PP_ORDER; do
+    cfg="${PP_CFG_DIR[$name]}"; cfg="${cfg/#\~/$HOME}"
+    _pp_doctor_acct "$name/native" "$cfg" native
+    for acct in $(_pp_list "$name"); do
+      [ "$acct" = native ] && continue
+      lf="$(_pp_login_marker "$name" "$acct")"; tf="$(_pp_token_file "$name" "$acct")"
+      if [ -r "$lf" ]; then _pp_doctor_acct "$name/$acct" "$(command cat "$lf")" login
+      elif [ -r "$tf" ]; then _pp_doctor_acct "$name/$acct" "$cfg" token; fi
+    done
+  done
+}
+
+# One health line for a config dir: auth state, credential location, and any
+# symlinks whose target no longer resolves.
+_pp_doctor_acct() {
+  setopt localoptions extendedglob
+  local label="$1" dir="$2" kind="$3"
+  if [ "$kind" = token ]; then printf '    %-20s token account (inference-only)\n' "$label"; return; fi
+  if [ ! -d "$dir" ]; then printf '    %-20s %s  ✗ dir MISSING\n' "$label" "${dir/#$HOME/~}"; return; fi
+  local logged creds l broken=0 total=0 mark
+  logged=$(CLAUDE_CONFIG_DIR="$dir" command claude auth status 2>/dev/null | _pp_json loggedIn)
+  if [ -f "$dir/.credentials.json" ]; then creds="creds:file"; else creds="creds:keychain"; fi
+  for l in "$dir"/*(@N) "$dir"/.*(@N); do total=$((total+1)); [ -e "$l" ] || broken=$((broken+1)); done
+  [ "$logged" = True ] && mark="✓ auth" || mark="✗ NOT logged in"
+  printf '    %-20s %s  %s  links:%s\n' "$label" "$mark" "$creds" "$([ $broken -eq 0 ] && print ok || print "$broken/$total BROKEN")"
+}
+
+# Tiny JSON field extractor (python3 if present, else a grep fallback).
+_pp_json() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c "import json,sys
+try: print(json.load(sys.stdin).get('$1'))
+except Exception: print('')"
+  else
+    grep -o "\"$1\"[: ]*[^,}]*" | head -1 | sed 's/.*[: ]//; s/[" ]//g'
+  fi
 }
 
 _pp_help() {
@@ -515,7 +556,8 @@ proton-pack — Claude Code profile + account switching, by directory
   pp rm <name>       remove a stored account (a sub-profile's dir is left intact)
   pp run [args]      launch (same as `claude`; use when the wrapper is disabled)
   pp reload          re-read profiles.conf after editing it
-  pp doctor          check config, perms, and dependencies
+  pp doctor          check config, perms, deps, and per-account health
+                     (auth state, credential location, broken symlinks)
   pp help            this help
 
 Accounts: 'native' is each profile's built-in login; stack more as b, c, d ...

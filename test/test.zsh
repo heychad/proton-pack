@@ -107,6 +107,11 @@ else
   print -r -- "$out" | grep -q 'macOS-only' && ok "capture declines on non-macOS" || bad "capture did not decline on non-macOS"
 fi
 
+print -r -- "10) doctor reports per-account health without error"
+out="$( cd "$ROOT/work" && pp doctor 2>&1 )"
+print -r -- "$out" | grep -q 'accounts (auth' && ok "doctor prints the accounts health section" || bad "doctor missing accounts section"
+print -r -- "$out" | grep -q 'work/native' && ok "doctor lists the native account" || bad "doctor missing native account line"
+
 print -r -- ""
 print -r -- "passed: $pass   failed: $fail"
 rm -rf "$ROOT"
