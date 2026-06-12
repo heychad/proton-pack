@@ -17,27 +17,35 @@ These are independent, and keeping them separate is the whole trick:
    each get their own login, skills, and settings, and the right one is chosen
    from your current directory. This is the "don't cross the streams" part.
 2. **Account** — *which Anthropic login provides the usage.* Each profile can
-   hold several accounts. `native` is the profile's built-in login; stack more
-   as `b`, `c`, `d` … When one runs out, `pp flip` switches to the next and your
-   sessions continue on it. Stacked accounts come in two flavors — a cheap
-   **token** account or a full-scope **login sub-profile** (see below).
+   stack several accounts. `native` is the profile's built-in login (full
+   scope); stack more as `b`, `c`, `d` … When one runs out, `pp flip` switches
+   to the next. Stacked accounts come in two flavors — a **token** account or a
+   **login sub-profile** — but read the macOS caveat below first.
 
-### Token account vs login sub-profile
+### Account types
 
 |  | **token** (`pp add`) | **login sub-profile** (`pp add-login`) |
 |---|---|---|
 | How | A long-lived OAuth token (`claude setup-token`) injected at launch | Its own config dir with its own `claude auth login` |
 | Setup | Paste a token once | Browser login once |
-| Shares native's sessions | Yes — `claude --resume` continues the same session | No — separate session history |
-| Remote Control / MCP auth | **No** — tokens are inference-only | **Yes** — it's a real login |
-| Inherits | The profile's config dir wholesale | Parent's git identity, gh user, MCP servers, settings |
-| Best for | Cheap failover for plain coding through a limit | A second account you need full features on |
+| Isolates the login | Yes — env-var token, never touches the keychain (safe to run in parallel) | **Linux/Windows only** — see caveat |
+| Scope | **Inference-only**: no Remote Control, no cloud review (`ultra`), no claude.ai / remote-OAuth MCP servers | Full (it's a real login) |
+| Best for | Parallel / failover coding through a usage limit | A second full-scope account **on Linux/Windows** |
 
-> **Heads-up:** Remote Control and MCP OAuth require a *full* login. Long-lived
-> tokens are inference-only by design, so a **token** account can't use them —
-> if Claude says *"requires a full-scope login token,"* flip back to `native` or
-> use a **login sub-profile** instead. proton-pack surfaces the type of each
-> account in `pp ls` so you always know which you're on.
+> ### ⚠️ macOS caveat — login sub-profiles don't isolate on macOS
+> On macOS, Claude stores the subscription login in the **shared system
+> Keychain**, which is *not* scoped per config dir. A **login sub-profile does
+> NOT give a separate login on macOS** — every config dir shares the one Keychain
+> login, and logging a sub-profile in just overwrites it. Login sub-profiles only
+> isolate on **Linux/Windows**, where credentials are per-`CLAUDE_CONFIG_DIR`
+> files. On macOS you have **one full-scope login at a time**: use a **token**
+> account to run a second account in parallel (inference-only), or
+> `claude auth login` to switch which account is the full-scope one (only when no
+> other session is live — it overwrites the shared slot).
+
+> **Heads-up (all platforms):** Remote Control, cloud review, and claude.ai /
+> remote-OAuth MCP servers all require a *full* login — a token account can't use
+> them. `pp ls` shows each account's type so you know which you're on.
 
 ## Install
 
@@ -87,9 +95,9 @@ logins are never touched. Sign in as the account you want to stack — **use a
 private/incognito window** so you don't accidentally mint a token for an account
 you're already signed into.
 
-`pp add-login` makes a sibling config dir (`<profile-dir>-<name>`) that inherits
-the profile's settings and MCP servers — but never its credentials — then prints
-the one command to log it in:
+`pp add-login` (**Linux/Windows** — see the macOS caveat above) makes a sibling
+config dir (`<profile-dir>-<name>`) that inherits the profile's settings and MCP
+servers — but never its credentials — then prints the one command to log it in:
 
 ```sh
 pp add-login b                                      # in a work directory
@@ -101,7 +109,8 @@ pp use b                                            # activate it (full scope)
 A login sub-profile's session history is separate from `native` (it's a
 different config dir), and its inherited MCP/settings are a snapshot taken at
 creation. `pp rm` removes it from the account list but leaves the config dir on
-disk (it's a real login) — delete it yourself when you're done with it.
+disk (it's a real login) — delete it yourself when you're done with it. On macOS
+this won't isolate the login (shared Keychain) — use a token account instead.
 
 ### Hitting a usage limit
 
