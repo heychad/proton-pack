@@ -24,24 +24,31 @@ These are independent, and keeping them separate is the whole trick:
 
 ### Account types
 
-|  | **token** (`pp add`) | **login sub-profile** (`pp add-login`) |
-|---|---|---|
-| How | A long-lived OAuth token (`claude setup-token`) injected at launch | Its own config dir with its own `claude auth login` |
-| Setup | Paste a token once | Browser login once |
-| Isolates the login | Yes — env-var token, never touches the keychain (safe to run in parallel) | **Linux/Windows only** — see caveat |
-| Scope | **Inference-only**: no Remote Control, no cloud review (`ultra`), no claude.ai / remote-OAuth MCP servers | Full (it's a real login) |
-| Best for | Parallel / failover coding through a usage limit | A second full-scope account **on Linux/Windows** |
+|  | **token** (`pp add`) | **login sub-profile** (`pp add-login`) | **captured login** (`pp capture`) |
+|---|---|---|---|
+| How | A long-lived OAuth token (`claude setup-token`) injected at launch | Its own config dir with its own `claude auth login` | Its own config dir; the login is extracted from the macOS Keychain into a file |
+| Platform | All | **Linux/Windows** (see the macOS note) | **macOS** |
+| Setup | Paste a token once | Browser login once | Browser login + one Keychain prompt |
+| Isolates the login | Yes — env-var token, never touches the keychain (safe to run in parallel) | Yes (per-dir credential files) | Yes (per-dir credential file) |
+| Scope | **Inference-only**: no Remote Control, no cloud review (`ultra`), no claude.ai / remote-OAuth MCP servers | Full (it's a real login) | Full (it's a real login) |
+| Best for | Quick failover coding through a usage limit | A second full-scope account on Linux/Windows | A second full-scope account on macOS |
 
-> ### ⚠️ macOS caveat — login sub-profiles don't isolate on macOS
-> On macOS, Claude stores the subscription login in the **shared system
-> Keychain**, which is *not* scoped per config dir. A **login sub-profile does
-> NOT give a separate login on macOS** — every config dir shares the one Keychain
-> login, and logging a sub-profile in just overwrites it. Login sub-profiles only
-> isolate on **Linux/Windows**, where credentials are per-`CLAUDE_CONFIG_DIR`
-> files. On macOS you have **one full-scope login at a time**: use a **token**
-> account to run a second account in parallel (inference-only), or
-> `claude auth login` to switch which account is the full-scope one (only when no
-> other session is live — it overwrites the shared slot).
+> ### macOS note — the shared Keychain slot, and how `pp capture` gets around it
+> On macOS, `claude auth login` always writes the subscription login to one
+> **shared Keychain slot** — never a per-dir file, even into a pre-seeded config
+> dir. So plain `pp add-login` can't isolate a second login there. But a config
+> dir that holds its **own credential file** is a complete full-scope login that
+> ignores the Keychain entirely — and the Keychain item can be extracted into
+> exactly that file. That's what **`pp capture`** does: sign in (lands in the
+> Keychain), then extract the item into the sub-profile's `.credentials.json`.
+> The result has everything a native login has — Remote Control, claude.ai MCP
+> servers, cloud review — and runs in parallel with your other logins.
+>
+> Two cautions: each `claude auth login` **replaces** whatever is in the shared
+> slot, so never log in over an account you haven't captured to a file. And the
+> captured credential is a **plaintext 0600 file** — an explicit tradeoff; see
+> Security. Reversible: delete the dir's `.credentials.json` and that dir falls
+> back to the Keychain.
 
 > **Heads-up (all platforms):** Remote Control, cloud review, and claude.ai /
 > remote-OAuth MCP servers all require a *full* login — a token account can't use
@@ -84,7 +91,8 @@ claude                 # launches in the profile + account for your current dir
 pp where               # what will `claude` use here?
 pp ls                  # accounts for this profile + their type (active one *)
 pp add b               # stack a token account (inference-only; browser login)
-pp add-login b         # stack a login sub-profile (full scope; browser login)
+pp add-login b         # stack a login sub-profile (full scope; Linux/Windows)
+pp capture b           # stack a full file-based login via Keychain extraction (macOS)
 pp use b               # switch the active account
 pp flip                # rotate to the next account, then run `claude --resume`
 pp rm b                # remove a stored account
@@ -110,7 +118,22 @@ A login sub-profile's session history is separate from `native` (it's a
 different config dir), and its inherited MCP/settings are a snapshot taken at
 creation. `pp rm` removes it from the account list but leaves the config dir on
 disk (it's a real login) — delete it yourself when you're done with it. On macOS
-this won't isolate the login (shared Keychain) — use a token account instead.
+this won't isolate the login (shared Keychain) — use `pp capture` instead.
+
+`pp capture` (**macOS** — see the macOS note above) is the same idea with one
+extra step: it creates the sub-profile dir, opens `claude auth login` (sign in
+as the account to add — **incognito window**), then extracts the resulting
+Keychain credential into the dir's own `.credentials.json` (macOS prompts once —
+"Always Allow"). It verifies by printing the captured account's `auth status`
+so you can confirm the email before the account is registered:
+
+```sh
+pp capture b           # in a work directory: confirm -> browser login -> Keychain prompt
+pp use b               # activate it (full scope), or: pp flip
+```
+
+It refuses to overwrite anything that exists — existing account names, existing
+sub-profile dirs — and a failed or aborted login adds nothing.
 
 ### Hitting a usage limit
 
@@ -146,6 +169,17 @@ conversation isn't open in two places.
   settings and MCP-server config from the parent; the login itself is created by
   `claude auth login` and stored by Claude (a per-dir file or your OS keychain),
   exactly like any other profile's native login.
+- **Captured logins are plaintext, full-scope credentials on disk** (`0600`
+  file, `0700` dir). That's the deliberate tradeoff `pp capture` makes to get a
+  second full login on macOS: convenience and parallelism in exchange for a
+  credential file any process running as you can read. Treat the dir like a
+  private key: don't commit, sync, or back it up anywhere you wouldn't put an
+  SSH key. To revoke, sign that account out from the Anthropic console (or log
+  it in again elsewhere — extraction doesn't survive rotation forever) and
+  delete the dir. To undo just the file mechanism, delete the dir's
+  `.credentials.json` — the dir falls back to the Keychain.
+- A Claude Code update could change the credential format or storage and break
+  captured logins; if that happens, re-run `pp capture`.
 
 Run `zsh test/test.zsh` for a self-check that asserts the above, and
 `zsh test/integration.zsh` to verify the launch path injects the right config

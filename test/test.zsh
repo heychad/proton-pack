@@ -79,6 +79,24 @@ out="$( cd "$ROOT/work" && pp rm c 2>&1 )"
 [ -d "$SUB" ] && ok "rm left sub-profile dir intact" || bad "rm deleted the sub-profile dir"
 print -r -- "$out" | grep -q 'reset to native' && ok "rm reset active to native" || bad "rm did not reset active"
 
+print -r -- "9) pp capture: guards fire before any login (macOS path)"
+if [[ "$OSTYPE" == darwin* ]]; then
+  out="$( cd "$ROOT/work" && pp capture '../evil' 2>&1 )"
+  print -r -- "$out" | grep -q 'invalid account name' && ok "capture rejects unsafe name" || bad "capture accepted unsafe name"
+  out="$( cd "$ROOT/work" && pp capture b 2>&1 )"
+  print -r -- "$out" | grep -q 'already exists' && ok "capture refuses existing account name" || bad "capture did not refuse existing name"
+  mkdir -p "$ROOT/.claude-work-d"
+  out="$( cd "$ROOT/work" && pp capture d 2>&1 )"
+  print -r -- "$out" | grep -q 'dir already exists' && ok "capture refuses existing sub-profile dir" || bad "capture did not refuse existing dir"
+  rmdir "$ROOT/.claude-work-d"
+  out="$( cd "$ROOT/work" && pp capture e </dev/null 2>&1 )"
+  print -r -- "$out" | grep -q 'aborted' && ok "capture aborts without confirmation" || bad "capture did not abort"
+  { [ ! -e "$ROOT/.claude-work-e" ] && [ ! -e "$PP_ACCOUNTS_DIR/work/e.login" ]; } && ok "aborted capture leaves nothing behind" || bad "aborted capture left files"
+else
+  out="$( cd "$ROOT/work" && pp capture x 2>&1 )"
+  print -r -- "$out" | grep -q 'macOS-only' && ok "capture declines on non-macOS" || bad "capture did not decline on non-macOS"
+fi
+
 print -r -- ""
 print -r -- "passed: $pass   failed: $fail"
 rm -rf "$ROOT"
