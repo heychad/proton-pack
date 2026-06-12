@@ -315,13 +315,18 @@ _pp_add_account() {
   print -r -- "  activate: pp use $name    |    next account: pp flip"
 }
 
-# Inherit a profile's config into a sub-profile dir: settings + MCP servers,
-# NEVER credentials or account identity. Shared by add-login and capture.
+# Inherit a profile's config + personality into a sub-profile dir so the
+# sub-account behaves identically — differing ONLY in which account it logs in
+# as. Copies settings + MCP servers; replicates every symlink the parent has
+# (commands, skills, plugins, agents, statusline, etc. — however your profile is
+# wired); copies a per-profile CLAUDE.md. NEVER copies credentials, account
+# identity, or session/history. Shared by add-login and capture.
 _pp_inherit_config() {
   local parent="$1" sub="$2"
   [ -r "$parent/settings.json" ]       && cp -p "$parent/settings.json"       "$sub/settings.json"
   [ -r "$parent/settings.local.json" ] && cp -p "$parent/settings.local.json" "$sub/settings.local.json"
   [ -r "$parent/.mcp.json" ]           && cp -p "$parent/.mcp.json"           "$sub/.mcp.json"
+  [ -f "$parent/CLAUDE.md" ] && [ ! -e "$sub/CLAUDE.md" ] && cp -p "$parent/CLAUDE.md" "$sub/CLAUDE.md"
   if [ -r "$parent/.claude.json" ] && command -v python3 >/dev/null 2>&1; then
 python3 - "$parent/.claude.json" "$sub/.claude.json" <<'PY'
 import json, sys
@@ -338,6 +343,20 @@ json.dump(out, open(dst, "w"), indent=2)
 PY
     chmod 600 "$sub/.claude.json"
   fi
+  # Replicate the parent's symlinks (this is how a profile shares one canonical
+  # set of commands/skills/plugins/agents across its accounts). A real entry in
+  # the sub that collides with a parent symlink is merged into the link target,
+  # never dropped.
+  local e tgt name
+  for e in "$parent"/*(@N) "$parent"/.*(@N); do
+    name="${e:t}"; tgt="$(readlink "$e")"
+    [ -L "$sub/$name" ] && continue
+    if [ -e "$sub/$name" ]; then
+      { [ -d "$sub/$name" ] && [ -d "$tgt" ]; } && cp -Rn "$sub/$name/." "$tgt/" 2>/dev/null
+      rm -rf "$sub/$name"
+    fi
+    ln -s "$tgt" "$sub/$name"
+  done
 }
 
 # Create a full-scope LOGIN sub-profile: a sibling config dir that inherits the

@@ -114,6 +114,15 @@ CLAUDE_CONFIG_DIR=~/.claude-work-b command claude auth status  # confirm it's di
 pp use b                                            # activate it (full scope)
 ```
 
+Both `pp add-login` and `pp capture` make the sub-profile **inherit the parent
+profile's personality** so it behaves identically — only the login differs. They
+copy `settings`, MCP-server config, and a per-profile `CLAUDE.md`, and they
+**replicate every symlink the parent profile has** (this is how a profile shares
+one canonical set of commands, skills, plugins, and agents across its accounts —
+if your profile dir symlinks `skills`/`commands`/`plugins` to a shared location,
+the sub-profile gets the same links). Credentials, account identity, and session
+history are never copied.
+
 A login sub-profile's session history is separate from `native` (it's a
 different config dir), and its inherited MCP/settings are a snapshot taken at
 creation. `pp rm` removes it from the account list but leaves the config dir on
